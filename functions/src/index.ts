@@ -2,9 +2,19 @@ import express, { Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import cors from 'cors';
 import bodyParser from 'body-parser';
-import { get3DS, getAccessToken, getPayments, patchPayment, request3DS, requestPayment } from './service';
 import * as functions from 'firebase-functions';
+import axios from 'axios';
+import https from 'https';
+import fs from 'fs';
+import path from 'path'
+import { getAccessToken } from './service';
 
+interface IProxy {
+    url : string
+    method : "POST" | "GET" | "PATCH",
+    contentType? : string
+    data : any
+ }
 
 const app = express();
 
@@ -12,89 +22,30 @@ app.use(cors())
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(express.json());
 
-app.post('/token', async (req: Request, res: Response) => {
-    const {  terminal_code, password } = req.body
 
-    const accessToken = await getAccessToken(terminal_code, password)
+app.post('/',  async (req: Request, res: Response) => {
 
-    res.json({ accessToken })
+    const proxy : IProxy = req.body
+
+    const url = new URL(proxy.url)
+
+    Object.entries(req.query).forEach(([key, value]) => {
+        url.searchParams.append(key, value as string)
+    })
+
+    const data = await fetch(url, {
+        method: proxy.method,
+        body:  proxy.contentType === undefined ? JSON.stringify(proxy.data) : proxy.data,
+        headers: {Authorization: req.header('Authorization')!, 'Content-Type': proxy.contentType ?? "application/json" }
+    })
+
+    res.json(await data.json())
+
 })
 
-app.get('/payments', async (req : Request, res: Response) => {
-    const {request_id, merchant_order_id} = req.query
-    const {authorization} = req.headers    
-
-    if (request_id && merchant_order_id && authorization && authorization.toString().startsWith('Bearer ')) {
-
-        const accessToken = authorization.toString().substring(7)
-        
-        const payments = await getPayments(accessToken,request_id.toString(), merchant_order_id.toString())
-
-        res.json(payments)
-    }
-})
-
-app.post('/payment', async (req : Request, res: Response) => {
-    const {authorization} = req.headers    
-
-    if (authorization && authorization.toString().startsWith('Bearer ')) {
-
-        const accessToken = authorization.toString().substring(7)
-        
-        const paymentResponse = await requestPayment(accessToken, req.body)
-
-        res.json(paymentResponse)
-    }
-})
-
-app.patch('/payment/:payment_id', async (req : Request, res : Response) => {
-    const payment_id = req.params.payment_id
-    const {authorization} = req.headers
-
-    if (authorization && authorization.toString().startsWith('Bearer ')) {
-
-        const accessToken = authorization.toString().substring(7)
-        
-        const paymentRes = await patchPayment(accessToken, payment_id,req.body)
-
-        res.json(paymentRes)
-    }
-}) 
-
-app.get('/authentication/:auth_id', async (req : Request, res: Response) => {
-    const auth_id = req.params.auth_id
-    const {authorization} = req.headers    
-
-    if (auth_id && authorization && authorization.toString().startsWith('Bearer ')) {
-
-        const accessToken = authorization.toString().substring(7)
-        
-        const payments = await get3DS(accessToken, auth_id)
-
-        res.json(payments)
-    }
-})
-
-app.post("/authentication", async (req: Request, res: Response) => {
-    const {authorization} = req.headers    
-
-    if (authorization && authorization.toString().startsWith('Bearer ')) {
-
-        const accessToken = authorization.toString().substring(7)
-        
-        const threeDSRes = await request3DS(accessToken, req.body)
-
-        res.json(threeDSRes)
-    }
-})
-
-
-
-app.post('/', async (req: Request, res: Response) => {
+app.post('/mobile-token', async (req: Request, res: Response) => {
 
     const accessToken = await getAccessToken("69911", "a15935712X")
-
-    console.log(accessToken)
 
     const requestId = uuidv4();
 
@@ -112,21 +63,67 @@ app.post('/', async (req: Request, res: Response) => {
 
     const mobileToken = await mobileTokenRes.json()
 
-    console.log(mobileToken)
-
     res.json({ token: mobileToken["mobile_token"] })
 });
 
-
-app.get("/health" , async (req: Request, res: Response) => {
+app.get("/health", async (req: Request, res: Response) => {
     res.json({ status: "OKAY" })
 })
 
 app.post('/3ds_redirect', (req, res) => {
     const newUrl = `https://unlimt-demo.web.app/callback?cres=${req.body["cres"]}`;
-  
-    res.redirect(newUrl);
-  });
 
+    res.redirect(newUrl);
+});
+
+app.post("/applepay-payment-session", async (req: Request, res: Response) => {
+
+    const certPath = path.join(__dirname, '../cert/merchant.com.helloworld', 'certificate_sandbox.pem');
+    const keyPath = path.join(__dirname, '../cert/merchant.com.helloworld', 'certificate_sandbox.key');
+
+    const response = await axios.post("https://apple-pay-gateway.apple.com/paymentservices/paymentSession",
+        {
+            'merchantIdentifier': "merchant.com.helloworld",
+            'domainName': 'unlimt-demo.web.app',
+            'displayName': 'Collins Ng',
+        }
+        , {
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            httpsAgent: new https.Agent({
+                cert: fs.readFileSync(certPath),
+                key: fs.readFileSync(keyPath),
+            })
+        })
+
+    res.json(response.data)
+
+})
+
+app.post("/applepay-payment-session-self-decrypt", async (req: Request, res: Response) => {
+
+    const certPath = path.join(__dirname, '../cert/merchant.com.helloworld.self-descrpt', 'certificate_sandbox.pem');
+    const keyPath = path.join(__dirname, '../cert/merchant.com.helloworld.self-descrpt', 'certificate_sandbox.key');
+
+    const response = await axios.post("https://apple-pay-gateway.apple.com/paymentservices/paymentSession",
+        {
+            'merchantIdentifier': "merchant.com.helloworld.self-descrpt",
+            'domainName': 'unlimit-apple-pay.web.app',
+            'displayName': 'Collins Ng',
+        }
+        , {
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            httpsAgent: new https.Agent({
+                cert: fs.readFileSync(certPath),
+                key: fs.readFileSync(keyPath),
+            })
+        })
+
+    res.json(response.data)
+
+})
 
 exports.api = functions.https.onRequest(app)
